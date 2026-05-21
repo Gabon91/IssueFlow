@@ -1,0 +1,954 @@
+openapi: 3.0.3
+info:
+  title: IssueFlow API
+  description: |
+    Ticket management backend platform — TDP 2026 Home Assignment.
+
+    Manages users, projects, tickets (issues), comments, attachments, ticket
+    dependencies, audit logs, CSV import/export, soft-deletes, @mentions,
+    auto-assignment to the least-loaded developer, and scheduled priority
+    escalation for overdue tickets.
+
+    Authentication: stateless JWT bearer token obtained from `POST /auth/login`.
+  version: 1.0.0
+  contact:
+    name: IssueFlow Team
+    email: rm-TDPIsrael@intl.att.com
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://issueflow.example.com
+    description: Production (placeholder)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+    description: Login, logout and current-user lookup.
+  - name: Users
+    description: User registry — identity behind ticket assignments and comments.
+  - name: Projects
+    description: Top-level containers grouping related tickets. Soft-deletable.
+  - name: Tickets
+    description: Core work items (issues). Soft-deletable, state-machine guarded.
+  - name: Comments
+    description: Discussion attached to a ticket. Supports @mentions.
+  - name: Dependencies
+    description: Blocker relationships between tickets in the same project.
+  - name: Attachments
+    description: Binary files attached to tickets (≤10 MB, restricted MIME types).
+  - name: Audit Log
+    description: Append-only history of state-changing actions.
+  - name: Soft Delete
+    description: ADMIN-only listing and restoration of soft-deleted records.
+  - name: Mentions
+    description: Per-user view of @mentions across comments.
+  - name: Workload
+    description: Per-project breakdown of open tickets by assignee.
+  - name: Import/Export
+    description: Bulk ticket CSV import and export.
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Authentication
+  # ---------------------------------------------------------------------------
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Obtain a JWT access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Token issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Invalidate the current bearer token (server-side deny-list)
+      responses:
+        '200': { description: Token invalidated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the currently authenticated user
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ---------------------------------------------------------------------------
+  # Users
+  # ---------------------------------------------------------------------------
+  /users:
+    get:
+      tags: [Users]
+      summary: List all users
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UserResponse' }
+    post:
+      tags: [Users]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreateRequest' }
+      responses:
+        '200':
+          description: Created user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /users/{userId}:
+    get:
+      tags: [Users]
+      summary: Get a user by id
+      parameters: [ { $ref: '#/components/parameters/UserId' } ]
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Users]
+      summary: Delete a user
+      parameters: [ { $ref: '#/components/parameters/UserId' } ]
+      responses:
+        '200': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /users/update/{userId}:
+    patch:
+      tags: [Users]
+      summary: Update a user's full name and/or role
+      parameters: [ { $ref: '#/components/parameters/UserId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserUpdateRequest' }
+      responses:
+        '200': { description: Updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /users/{userId}/mentions:
+    get:
+      tags: [Mentions]
+      summary: List comments where this user was @mentioned (newest first)
+      parameters:
+        - { $ref: '#/components/parameters/UserId' }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Paginated mentions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MentionPage' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Projects
+  # ---------------------------------------------------------------------------
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List all (non-deleted) projects
+      responses:
+        '200':
+          description: Projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProjectResponse' }
+    post:
+      tags: [Projects]
+      summary: Create a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectCreateRequest' }
+      responses:
+        '200':
+          description: Created project
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/{projectId}:
+    get:
+      tags: [Projects]
+      summary: Get a project by id
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200':
+          description: Project
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Projects]
+      summary: Update a project's name and/or description
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectUpdateRequest' }
+      responses:
+        '200': { description: Updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Projects]
+      summary: Soft-delete a project
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { description: Soft-deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/deleted:
+    get:
+      tags: [Soft Delete]
+      summary: List soft-deleted projects (ADMIN only)
+      responses:
+        '200':
+          description: Deleted projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProjectResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /projects/{projectId}/restore:
+    post:
+      tags: [Soft Delete]
+      summary: Restore a soft-deleted project (ADMIN only)
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200': { description: Restored }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /projects/{projectId}/workload:
+    get:
+      tags: [Workload]
+      summary: Get open-ticket counts per user in the project (ascending)
+      parameters: [ { $ref: '#/components/parameters/ProjectId' } ]
+      responses:
+        '200':
+          description: Workload entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/WorkloadEntry' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+
+  # ---------------------------------------------------------------------------
+  # Tickets
+  # ---------------------------------------------------------------------------
+  /tickets:
+    get:
+      tags: [Tickets]
+      summary: List tickets in a project
+      parameters:
+        - in: query
+          name: projectId
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TicketResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Tickets]
+      summary: Create a ticket
+      description: >
+        If `assigneeId` is omitted the system auto-assigns the least-loaded
+        DEVELOPER in the project (ties broken by oldest registrant). If no
+        DEVELOPER is linked to the project the ticket is created unassigned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketCreateRequest' }
+      responses:
+        '200':
+          description: Created ticket
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/{ticketId}:
+    get:
+      tags: [Tickets]
+      summary: Get a ticket by id
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      responses:
+        '200':
+          description: Ticket
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Tickets]
+      summary: Update a ticket
+      description: >
+        Status transitions are forward-only:
+        TODO → IN_PROGRESS → IN_REVIEW → DONE. Tickets in status DONE are
+        immutable. Cannot transition to DONE while open blockers exist.
+        Concurrent updates by two users return 409.
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketUpdateRequest' }
+      responses:
+        '200': { description: Updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: Illegal state transition or DONE-blocker violation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+    delete:
+      tags: [Tickets]
+      summary: Soft-delete a ticket
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      responses:
+        '200': { description: Soft-deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/deleted:
+    get:
+      tags: [Soft Delete]
+      summary: List soft-deleted tickets in a project (ADMIN only)
+      parameters:
+        - in: query
+          name: projectId
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Deleted tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TicketResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /tickets/{ticketId}/restore:
+    post:
+      tags: [Soft Delete]
+      summary: Restore a soft-deleted ticket (ADMIN only)
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      responses:
+        '200': { description: Restored }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/export:
+    get:
+      tags: [Import/Export]
+      summary: Export tickets of a project as CSV
+      parameters:
+        - in: query
+          name: projectId
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+                example: |
+                  id,title,description,status,priority,type,assigneeId
+                  1,Fix login bug,"Auth fails on Safari, retry loop",TODO,HIGH,BUG,2
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tickets/import:
+    post:
+      tags: [Import/Export]
+      summary: Bulk-import tickets from a CSV file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, projectId]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV with columns title, description, status, priority, type, assigneeId
+                projectId:
+                  type: integer
+                  format: int64
+      responses:
+        '200':
+          description: Import summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportSummary' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Comments
+  # ---------------------------------------------------------------------------
+  /tickets/{ticketId}/comments:
+    get:
+      tags: [Comments]
+      summary: List comments on a ticket
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      responses:
+        '200':
+          description: Comments
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CommentResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Comments]
+      summary: Add a comment
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommentCreateRequest' }
+      responses:
+        '200':
+          description: Created comment (with mentions resolved)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/{ticketId}/comments/{commentId}:
+    patch:
+      tags: [Comments]
+      summary: Update a comment's content (mentions re-evaluated)
+      parameters:
+        - { $ref: '#/components/parameters/TicketId' }
+        - { $ref: '#/components/parameters/CommentId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommentUpdateRequest' }
+      responses:
+        '200': { description: Updated }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Comments]
+      summary: Delete a comment
+      parameters:
+        - { $ref: '#/components/parameters/TicketId' }
+        - { $ref: '#/components/parameters/CommentId' }
+      responses:
+        '200': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Ticket Dependencies
+  # ---------------------------------------------------------------------------
+  /tickets/{ticketId}/dependencies:
+    get:
+      tags: [Dependencies]
+      summary: List tickets this ticket is blocked by
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      responses:
+        '200':
+          description: Blocker tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DependencyEntry' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Dependencies]
+      summary: Add a blocker dependency
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DependencyCreateRequest' }
+      responses:
+        '200': { description: Dependency added }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Tickets not in the same project, or self-dependency
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /tickets/{ticketId}/dependencies/{blockerId}:
+    delete:
+      tags: [Dependencies]
+      summary: Remove a blocker dependency
+      parameters:
+        - { $ref: '#/components/parameters/TicketId' }
+        - in: path
+          name: blockerId
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200': { description: Removed }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Attachments
+  # ---------------------------------------------------------------------------
+  /tickets/{ticketId}/attachments:
+    post:
+      tags: [Attachments]
+      summary: Upload an attachment to a ticket
+      description: |
+        Max size 10 MB. Allowed MIME types:
+        `image/png`, `image/jpeg`, `application/pdf`, `text/plain`.
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Stored attachment metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttachmentResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413':
+          description: File exceeds 10 MB
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '415':
+          description: Unsupported MIME type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+  /tickets/{ticketId}/attachments/{attachmentId}:
+    delete:
+      tags: [Attachments]
+      summary: Delete an attachment
+      parameters:
+        - { $ref: '#/components/parameters/TicketId' }
+        - in: path
+          name: attachmentId
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------------
+  # Audit Log
+  # ---------------------------------------------------------------------------
+  /audit-logs:
+    get:
+      tags: [Audit Log]
+      summary: List audit log entries with optional filters
+      parameters:
+        - in: query
+          name: entityType
+          schema: { $ref: '#/components/schemas/AuditEntityType' }
+        - in: query
+          name: entityId
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: action
+          schema: { $ref: '#/components/schemas/AuditAction' }
+        - in: query
+          name: actor
+          schema: { $ref: '#/components/schemas/AuditActor' }
+      responses:
+        '200':
+          description: Matching audit log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditLogResponse' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT issued by `POST /auth/login`. Send as `Authorization: Bearer <token>`."
+
+  parameters:
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema: { type: integer, format: int64 }
+    ProjectId:
+      in: path
+      name: projectId
+      required: true
+      schema: { type: integer, format: int64 }
+    TicketId:
+      in: path
+      name: ticketId
+      required: true
+      schema: { type: integer, format: int64 }
+    CommentId:
+      in: path
+      name: commentId
+      required: true
+      schema: { type: integer, format: int64 }
+
+  responses:
+    BadRequest:
+      description: Validation failure or malformed request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: Authenticated but lacking required role
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: Concurrent update conflict (optimistic lock)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+
+  schemas:
+    # ---------- Enums ----------
+    Role:
+      type: string
+      enum: [ADMIN, DEVELOPER]
+    TicketStatus:
+      type: string
+      enum: [TODO, IN_PROGRESS, IN_REVIEW, DONE]
+    TicketPriority:
+      type: string
+      enum: [LOW, MEDIUM, HIGH, CRITICAL]
+    TicketType:
+      type: string
+      enum: [BUG, FEATURE, TECHNICAL]
+    AuditAction:
+      type: string
+      enum: [CREATE, UPDATE, DELETE, RESTORE, AUTO_ASSIGN, AUTO_ESCALATE, LOGIN, LOGOUT]
+    AuditActor:
+      type: string
+      enum: [USER, SYSTEM]
+    AuditEntityType:
+      type: string
+      enum: [USER, PROJECT, TICKET, COMMENT, DEPENDENCY, ATTACHMENT]
+
+    # ---------- Error envelope (RFC 7807-style) ----------
+    ApiError:
+      type: object
+      required: [timestamp, status, error, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          example: '2026-05-20T10:15:30Z'
+        status:
+          type: integer
+          example: 400
+        error:
+          type: string
+          example: 'Bad Request'
+        message:
+          type: string
+          example: 'username must not be blank'
+        path:
+          type: string
+          example: '/users'
+        traceId:
+          type: string
+          description: OpenTelemetry trace id for correlation
+          example: '4bf92f3577b34da6a3ce929d0e0e4736'
+        fieldErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string, example: 'email' }
+              message: { type: string, example: 'must be a well-formed email address' }
+
+    # ---------- Auth ----------
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, example: jdoe }
+        password: { type: string, format: password, example: secret }
+    TokenResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken: { type: string, example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... }
+        tokenType:   { type: string, example: Bearer }
+        expiresIn:   { type: integer, example: 3600, description: Seconds until token expiry }
+
+    # ---------- Users ----------
+    UserResponse:
+      type: object
+      required: [id, username, email, fullName, role]
+      properties:
+        id:       { type: integer, format: int64, example: 1 }
+        username: { type: string, example: jdoe }
+        email:    { type: string, format: email, example: jdoe@example.com }
+        fullName: { type: string, example: John Doe }
+        role:     { $ref: '#/components/schemas/Role' }
+    UserCreateRequest:
+      type: object
+      required: [username, email, fullName, role]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 50, pattern: '^[A-Za-z0-9_]+$', example: jdoe }
+        email:    { type: string, format: email, example: jdoe@example.com }
+        fullName: { type: string, minLength: 1, maxLength: 120, example: John Doe }
+        role:     { $ref: '#/components/schemas/Role' }
+        password: { type: string, format: password, minLength: 8, example: s3cretP@ss }
+    UserUpdateRequest:
+      type: object
+      properties:
+        fullName: { type: string, minLength: 1, maxLength: 120, example: Jane Doe }
+        role:     { $ref: '#/components/schemas/Role' }
+    MentionedUser:
+      type: object
+      required: [id, username, fullName]
+      properties:
+        id:       { type: integer, format: int64, example: 1 }
+        username: { type: string, example: jdoe }
+        fullName: { type: string, example: John Doe }
+
+    # ---------- Projects ----------
+    ProjectResponse:
+      type: object
+      required: [id, name, ownerId]
+      properties:
+        id:          { type: integer, format: int64, example: 1 }
+        name:        { type: string, example: Sample Project }
+        description: { type: string, example: A sample project }
+        ownerId:     { type: integer, format: int64, example: 1 }
+    ProjectCreateRequest:
+      type: object
+      required: [name, ownerId]
+      properties:
+        name:        { type: string, minLength: 1, maxLength: 120, example: Sample Project }
+        description: { type: string, maxLength: 2000, example: A sample project }
+        ownerId:     { type: integer, format: int64, example: 1 }
+    ProjectUpdateRequest:
+      type: object
+      properties:
+        name:        { type: string, minLength: 1, maxLength: 120, example: Updated Name }
+        description: { type: string, maxLength: 2000, example: Updated description }
+
+    # ---------- Tickets ----------
+    TicketResponse:
+      type: object
+      required: [id, title, status, priority, type, projectId, isOverdue]
+      properties:
+        id:          { type: integer, format: int64, example: 1 }
+        title:       { type: string, example: Fix login bug }
+        description: { type: string, example: 'Auth fails on Safari, retry loop' }
+        status:      { $ref: '#/components/schemas/TicketStatus' }
+        priority:    { $ref: '#/components/schemas/TicketPriority' }
+        type:        { $ref: '#/components/schemas/TicketType' }
+        projectId:   { type: integer, format: int64, example: 1 }
+        assigneeId:  { type: integer, format: int64, nullable: true, example: 2 }
+        dueDate:     { type: string, format: date-time, nullable: true, example: '2026-04-01T00:00:00Z' }
+        isOverdue:   { type: boolean, example: false }
+    TicketCreateRequest:
+      type: object
+      required: [title, status, priority, type, projectId]
+      properties:
+        title:       { type: string, minLength: 1, maxLength: 200, example: Fix login bug }
+        description: { type: string, maxLength: 10000 }
+        status:      { $ref: '#/components/schemas/TicketStatus' }
+        priority:    { $ref: '#/components/schemas/TicketPriority' }
+        type:        { $ref: '#/components/schemas/TicketType' }
+        projectId:   { type: integer, format: int64, example: 1 }
+        assigneeId:  { type: integer, format: int64, nullable: true, description: 'Optional. If omitted, auto-assignment runs.' }
+        dueDate:     { type: string, format: date-time, nullable: true }
+    TicketUpdateRequest:
+      type: object
+      properties:
+        title:       { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+        status:      { $ref: '#/components/schemas/TicketStatus' }
+        priority:    { $ref: '#/components/schemas/TicketPriority' }
+        assigneeId:  { type: integer, format: int64, nullable: true }
+        dueDate:     { type: string, format: date-time, nullable: true }
+
+    # ---------- Comments ----------
+    CommentResponse:
+      type: object
+      required: [id, ticketId, authorId, content]
+      properties:
+        id:        { type: integer, format: int64, example: 1 }
+        ticketId:  { type: integer, format: int64, example: 1 }
+        authorId:  { type: integer, format: int64, example: 2 }
+        content:   { type: string, example: 'Hello @jdoe!' }
+        mentionedUsers:
+          type: array
+          items: { $ref: '#/components/schemas/MentionedUser' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CommentCreateRequest:
+      type: object
+      required: [authorId, content]
+      properties:
+        authorId: { type: integer, format: int64, example: 2 }
+        content:  { type: string, minLength: 1, maxLength: 5000, example: 'Hello @jdoe!' }
+    CommentUpdateRequest:
+      type: object
+      required: [content]
+      properties:
+        content:  { type: string, minLength: 1, maxLength: 5000, example: 'Updated comment.' }
+
+    # ---------- Dependencies ----------
+    DependencyEntry:
+      type: object
+      required: [id, title, status]
+      properties:
+        id:     { type: integer, format: int64, example: 42 }
+        title:  { type: string, example: Blocking ticket }
+        status: { $ref: '#/components/schemas/TicketStatus' }
+    DependencyCreateRequest:
+      type: object
+      required: [blockedBy]
+      properties:
+        blockedBy: { type: integer, format: int64, example: 42 }
+
+    # ---------- Attachments ----------
+    AttachmentResponse:
+      type: object
+      required: [id, ticketId, filename, contentType]
+      properties:
+        id:          { type: integer, format: int64, example: 1 }
+        ticketId:    { type: integer, format: int64, example: 1 }
+        filename:    { type: string, example: screenshot.png }
+        contentType: { type: string, example: image/png }
+        sizeBytes:   { type: integer, format: int64, example: 204800 }
+        uploadedAt:  { type: string, format: date-time }
+
+    # ---------- Audit Log ----------
+    AuditLogResponse:
+      type: object
+      required: [id, action, entityType, entityId, actor, timestamp]
+      properties:
+        id:          { type: integer, format: int64, example: 1 }
+        action:      { $ref: '#/components/schemas/AuditAction' }
+        entityType:  { $ref: '#/components/schemas/AuditEntityType' }
+        entityId:    { type: integer, format: int64, example: 5 }
+        performedBy: { type: integer, format: int64, nullable: true, example: 2 }
+        actor:       { $ref: '#/components/schemas/AuditActor' }
+        timestamp:   { type: string, format: date-time, example: '2026-03-01T10:00:00Z' }
+        payload:
+          type: object
+          additionalProperties: true
+          description: Before/after snapshot or diff. Free-form JSON.
+
+    # ---------- Mentions ----------
+    MentionPage:
+      type: object
+      required: [data, total, page]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/CommentResponse' }
+        total: { type: integer, example: 10 }
+        page:  { type: integer, example: 1 }
+
+    # ---------- Workload ----------
+    WorkloadEntry:
+      type: object
+      required: [userId, username, openTicketCount]
+      properties:
+        userId:          { type: integer, format: int64, example: 1 }
+        username:        { type: string, example: jdoe }
+        openTicketCount: { type: integer, example: 3 }
+
+    # ---------- Import summary ----------
+    ImportSummary:
+      type: object
+      required: [created, failed]
+      properties:
+        created: { type: integer, example: 42 }
+        failed:  { type: integer, example: 3 }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              row:     { type: integer, example: 5 }
+              message: { type: string, example: 'Invalid status value "OPEN"' }
