@@ -23,3 +23,12 @@ spring:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
+
+# Stateless JWT auth. Secret MUST be overridden via env in production (>=32 bytes for HS256).
+issueflow:
+  security:
+    jwt:
+      secret: ${ISSUEFLOW_JWT_SECRET:change-me-please-change-me-please-32b!}
+      issuer: issueflow
+      audience: issueflow-api
+      expiration-seconds: 3600

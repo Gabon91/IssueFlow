@@ -1,5 +1,6 @@
 package com.att.tdp.issueflow.mention;
 
+import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -18,4 +19,8 @@ public interface CommentMentionRepository extends JpaRepository<CommentMention, 
     boolean existsByCommentIdAndMentionedUserId(Long commentId, Long mentionedUserId);
 
     long countByMentionedUserId(Long userId);
+
+    List<CommentMention> findByCommentId(Long commentId);
+
+    void deleteByCommentId(Long commentId);
 }

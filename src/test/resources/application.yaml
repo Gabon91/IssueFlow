@@ -24,3 +24,11 @@ spring:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
+
+issueflow:
+  security:
+    jwt:
+      secret: test-secret-test-secret-test-secret-32b!
+      issuer: issueflow
+      audience: issueflow-api
+      expiration-seconds: 3600
