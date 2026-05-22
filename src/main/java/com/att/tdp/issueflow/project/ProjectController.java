@@ -3,6 +3,7 @@ package com.att.tdp.issueflow.project;
 import com.att.tdp.issueflow.project.dto.ProjectCreateRequest;
 import com.att.tdp.issueflow.project.dto.ProjectResponse;
 import com.att.tdp.issueflow.project.dto.ProjectUpdateRequest;
+import com.att.tdp.issueflow.project.dto.WorkloadEntry;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -62,5 +63,10 @@ public class ProjectController {
     @PreAuthorize("hasRole('ADMIN')")
     public void restore(@PathVariable Long projectId) {
         projectService.restore(projectId);
+    }
+
+    @GetMapping("/{projectId}/workload")
+    public List<WorkloadEntry> workload(@PathVariable Long projectId) {
+        return projectService.workload(projectId);
     }
 }

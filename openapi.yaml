@@ -551,6 +551,19 @@ paths:
   # Attachments
   # ---------------------------------------------------------------------------
   /tickets/{ticketId}/attachments:
+    get:
+      tags: [Attachments]
+      summary: List attachments on a ticket
+      parameters: [ { $ref: '#/components/parameters/TicketId' } ]
+      responses:
+        '200':
+          description: Attachment metadata, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AttachmentResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
     post:
       tags: [Attachments]
       summary: Upload an attachment to a ticket
@@ -590,6 +603,7 @@ paths:
     delete:
       tags: [Attachments]
       summary: Delete an attachment
+      description: Only the original uploader or an ADMIN may delete.
       parameters:
         - { $ref: '#/components/parameters/TicketId' }
         - in: path
@@ -598,6 +612,27 @@ paths:
           schema: { type: integer, format: int64 }
       responses:
         '200': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /tickets/{ticketId}/attachments/{attachmentId}/download:
+    get:
+      tags: [Attachments]
+      summary: Download an attachment's binary content
+      description: |
+        Streams the stored bytes with the original `Content-Type` and a
+        `Content-Disposition: attachment; filename="<original>"` header.
+      parameters:
+        - { $ref: '#/components/parameters/TicketId' }
+        - in: path
+          name: attachmentId
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Raw attachment bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ---------------------------------------------------------------------------

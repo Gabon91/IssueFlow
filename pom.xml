@@ -32,7 +32,20 @@
 		<mapstruct.version>1.6.3</mapstruct.version>
 		<lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
 		<springdoc.version>2.7.0</springdoc.version>
+		<jacoco.version>0.8.12</jacoco.version>
+		<testcontainers.version>1.21.4</testcontainers.version>
 	</properties>
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.testcontainers</groupId>
+				<artifactId>testcontainers-bom</artifactId>
+				<version>${testcontainers.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -49,6 +62,12 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+
+		<!-- AspectJ-based @Audited interception for write-side service methods. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-aop</artifactId>
 		</dependency>
 
 		<!-- Stateless JWT auth (JJWT 0.12.x split-API style). impl + jackson at runtime. -->
@@ -121,6 +140,24 @@
 			<artifactId>h2</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<!-- Phase 5 — Postgres-backed integration tests against a throwaway container,
+		     keeping the H2 fast-feedback loop for unit/slice tests. -->
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>io.rest-assured</groupId>
+			<artifactId>rest-assured</artifactId>
+			<scope>test</scope>
+		</dependency>
 		<!-- Apache Commons CSV for ticket export/import -->
 		<dependency>
 			<groupId>org.apache.commons</groupId>
@@ -134,6 +171,35 @@
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>${springdoc.version}</version>
+		</dependency>
+
+		<!-- Phase 4 observability: probes (/actuator/health/{liveness,readiness}),
+		     Micrometer metrics registry, /actuator/info, /actuator/metrics. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
+		<!-- Prometheus scrape endpoint at /actuator/prometheus. -->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
+
+		<!-- Micrometer Observation API → OpenTelemetry: populates trace_id / span_id
+		     in MDC for log correlation. No exporter wired by default; flip on by
+		     adding opentelemetry-exporter-otlp + management.otlp.tracing.endpoint. -->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-tracing-bridge-otel</artifactId>
+		</dependency>
+
+		<!-- Structured JSON logs (one event per line) with MDC fields surfaced as
+		     top-level keys; consumed by logback-spring.xml. -->
+		<dependency>
+			<groupId>net.logstash.logback</groupId>
+			<artifactId>logstash-logback-encoder</artifactId>
+			<version>8.0</version>
 		</dependency>
 	</dependencies>
 
@@ -173,6 +239,65 @@
 						</exclude>
 					</excludes>
 				</configuration>
+			</plugin>
+
+			<!-- Failsafe runs *IT classes at the integration-test phase. The single
+			     Testcontainers-backed IT (ReadmeApiHappyPathIT) lives here so that
+			     mvn test stays fast on H2 and mvn verify spins up Postgres in Docker.
+			     DOCKER_HOST is overridable via env so CI and Docker Desktop on Windows
+			     (which exposes the Linux engine on a non-default named pipe) both work. -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<configuration>
+					<environmentVariables>
+						<DOCKER_HOST>${env.DOCKER_HOST}</DOCKER_HOST>
+					</environmentVariables>
+				</configuration>
+				<executions>
+					<execution>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<!-- JaCoCo: line/branch coverage report under target/site/jacoco. Both
+			     surefire (unit/slice) and failsafe (Testcontainers IT) write to the
+			     same exec file with append=true so the verify-phase report covers
+			     end-to-end coverage of the service layer. -->
+			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>${jacoco.version}</version>
+				<configuration>
+					<destFile>${project.build.directory}/jacoco.exec</destFile>
+					<dataFile>${project.build.directory}/jacoco.exec</dataFile>
+					<append>true</append>
+				</configuration>
+				<executions>
+					<execution>
+						<id>prepare-agent</id>
+						<goals>
+							<goal>prepare-agent</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>prepare-agent-integration</id>
+						<goals>
+							<goal>prepare-agent-integration</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>report</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 		</plugins>
 	</build>

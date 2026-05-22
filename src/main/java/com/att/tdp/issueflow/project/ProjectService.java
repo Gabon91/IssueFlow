@@ -1,9 +1,13 @@
 package com.att.tdp.issueflow.project;
 
+import com.att.tdp.issueflow.auditlog.AuditAction;
+import com.att.tdp.issueflow.auditlog.AuditEntityType;
+import com.att.tdp.issueflow.common.audit.Audited;
 import com.att.tdp.issueflow.common.error.ResourceNotFoundException;
 import com.att.tdp.issueflow.project.dto.ProjectCreateRequest;
 import com.att.tdp.issueflow.project.dto.ProjectResponse;
 import com.att.tdp.issueflow.project.dto.ProjectUpdateRequest;
+import com.att.tdp.issueflow.project.dto.WorkloadEntry;
 import com.att.tdp.issueflow.user.User;
 import com.att.tdp.issueflow.user.UserRepository;
 import java.time.Instant;
@@ -42,6 +46,7 @@ public class ProjectService {
         return projectMapper.toResponse(load(id));
     }
 
+    @Audited(action = AuditAction.CREATE, entityType = AuditEntityType.PROJECT)
     public ProjectResponse create(ProjectCreateRequest req) {
         User owner = userRepository.findById(req.ownerId())
             .orElseThrow(() -> ResourceNotFoundException.of("User", req.ownerId()));
@@ -53,6 +58,7 @@ public class ProjectService {
         return projectMapper.toResponse(projectRepository.save(project));
     }
 
+    @Audited(action = AuditAction.UPDATE, entityType = AuditEntityType.PROJECT, idArg = 0)
     public ProjectResponse update(Long id, ProjectUpdateRequest req) {
         Project p = load(id);
         if (req.name() != null) {
@@ -64,6 +70,7 @@ public class ProjectService {
         return projectMapper.toResponse(p);
     }
 
+    @Audited(action = AuditAction.DELETE, entityType = AuditEntityType.PROJECT, idArg = 0)
     public void softDelete(Long id) {
         Project p = load(id);
         p.setDeletedAt(Instant.now());
@@ -75,10 +82,19 @@ public class ProjectService {
             .stream().map(projectMapper::toResponse).toList();
     }
 
+    @Audited(action = AuditAction.RESTORE, entityType = AuditEntityType.PROJECT, idArg = 0)
     public void restore(Long id) {
         Project p = projectRepository.findByIdIncludingDeleted(id)
             .orElseThrow(() -> ResourceNotFoundException.of("Project", id));
         p.setDeletedAt(null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<WorkloadEntry> workload(Long id) {
+        load(id);
+        return userRepository.findDeveloperWorkloadsByProject(id).stream()
+            .map(w -> new WorkloadEntry(w.getUserId(), w.getUsername(), w.getOpenTicketCount()))
+            .toList();
     }
 
     private Project load(Long id) {

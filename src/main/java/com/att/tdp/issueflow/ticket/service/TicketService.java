@@ -1,5 +1,8 @@
 package com.att.tdp.issueflow.ticket.service;
 
+import com.att.tdp.issueflow.auditlog.AuditAction;
+import com.att.tdp.issueflow.auditlog.AuditEntityType;
+import com.att.tdp.issueflow.common.audit.Audited;
 import com.att.tdp.issueflow.common.error.BlockedByDependencyException;
 import com.att.tdp.issueflow.common.error.IllegalStateTransitionException;
 import com.att.tdp.issueflow.common.error.ResourceNotFoundException;
@@ -15,6 +18,9 @@ import com.att.tdp.issueflow.ticket.domain.TicketStateMachine;
 import com.att.tdp.issueflow.ticket.domain.TicketStatus;
 import com.att.tdp.issueflow.user.User;
 import com.att.tdp.issueflow.user.UserRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.annotation.Observed;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
@@ -37,15 +43,24 @@ public class TicketService {
     private final ProjectRepository projectRepository;
     private final UserRepository userRepository;
     private final TicketMapper ticketMapper;
+    private final Counter ticketsCreated;
+    private final Counter ticketsAutoAssigned;
 
     public TicketService(TicketRepository ticketRepository,
                          ProjectRepository projectRepository,
                          UserRepository userRepository,
-                         TicketMapper ticketMapper) {
+                         TicketMapper ticketMapper,
+                         MeterRegistry meterRegistry) {
         this.ticketRepository = ticketRepository;
         this.projectRepository = projectRepository;
         this.userRepository = userRepository;
         this.ticketMapper = ticketMapper;
+        this.ticketsCreated = Counter.builder("issueflow.tickets.created")
+            .description("Tickets created via POST /tickets")
+            .register(meterRegistry);
+        this.ticketsAutoAssigned = Counter.builder("issueflow.tickets.auto_assigned")
+            .description("Tickets created without an explicit assignee that received one via I7 auto-assignment")
+            .register(meterRegistry);
     }
 
     @Transactional(readOnly = true)
@@ -60,6 +75,8 @@ public class TicketService {
         return ticketMapper.toResponse(loadDetail(id));
     }
 
+    @Audited(action = AuditAction.CREATE, entityType = AuditEntityType.TICKET)
+    @Observed(name = "issueflow.ticket.create", contextualName = "ticket.create")
     public TicketResponse create(TicketCreateRequest req) {
         Project project = requireProject(req.projectId());
         User assignee = resolveAssignee(req.assigneeId(), project.getId());
@@ -74,9 +91,16 @@ public class TicketService {
             .dueDate(req.dueDate())
             .isOverdue(false)
             .build();
-        return ticketMapper.toResponse(ticketRepository.save(ticket));
+        Ticket saved = ticketRepository.save(ticket);
+        ticketsCreated.increment();
+        if (req.assigneeId() == null && assignee != null) {
+            ticketsAutoAssigned.increment();
+        }
+        return ticketMapper.toResponse(saved);
     }
 
+    @Audited(action = AuditAction.UPDATE, entityType = AuditEntityType.TICKET, idArg = 0)
+    @Observed(name = "issueflow.ticket.update", contextualName = "ticket.update")
     public TicketResponse update(Long id, TicketUpdateRequest req) {
         Ticket t = load(id);
         if (t.getStatus() == TicketStatus.DONE) {
@@ -105,6 +129,7 @@ public class TicketService {
         return ticketMapper.toResponse(t);
     }
 
+    @Audited(action = AuditAction.DELETE, entityType = AuditEntityType.TICKET, idArg = 0)
     public void softDelete(Long id) {
         Ticket t = load(id);
         t.setDeletedAt(Instant.now());
@@ -117,6 +142,7 @@ public class TicketService {
             .map(ticketMapper::toResponse).toList();
     }
 
+    @Audited(action = AuditAction.RESTORE, entityType = AuditEntityType.TICKET, idArg = 0)
     public void restore(Long id) {
         Ticket t = ticketRepository.findByIdIncludingDeleted(id)
             .orElseThrow(() -> ResourceNotFoundException.of("Ticket", id));

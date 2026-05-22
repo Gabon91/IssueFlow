@@ -40,6 +40,9 @@ public interface TicketRepository extends JpaRepository<Ticket, Long>, JpaSpecif
     /** Workload count for a given assignee, excluding tickets already {@code DONE}. */
     long countByAssigneeIdAndStatusNot(Long assigneeId, TicketStatus status);
 
+    /** Live count of tickets currently flagged overdue; powers the Micrometer gauge. */
+    long countByIsOverdueTrue();
+
     /**
      * Overdue scanner used by the {@code @Scheduled} escalation job: rows whose
      * {@code due_date} has passed and are not yet {@code DONE} nor already flagged.

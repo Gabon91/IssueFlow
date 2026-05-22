@@ -1,9 +1,12 @@
 package com.att.tdp.issueflow.comment;
 
+import com.att.tdp.issueflow.auditlog.AuditAction;
+import com.att.tdp.issueflow.auditlog.AuditEntityType;
 import com.att.tdp.issueflow.comment.dto.CommentCreateRequest;
 import com.att.tdp.issueflow.comment.dto.CommentResponse;
 import com.att.tdp.issueflow.comment.dto.CommentUpdateRequest;
 import com.att.tdp.issueflow.comment.dto.MentionedUser;
+import com.att.tdp.issueflow.common.audit.Audited;
 import com.att.tdp.issueflow.common.error.ResourceNotFoundException;
 import com.att.tdp.issueflow.mention.CommentMention;
 import com.att.tdp.issueflow.mention.CommentMentionRepository;
@@ -53,6 +56,7 @@ public class CommentService {
             .map(this::toResponse).toList();
     }
 
+    @Audited(action = AuditAction.CREATE, entityType = AuditEntityType.COMMENT)
     public CommentResponse create(Long ticketId, CommentCreateRequest req) {
         Ticket ticket = requireTicket(ticketId);
         User author = userRepository.findById(req.authorId())
@@ -73,6 +77,7 @@ public class CommentService {
         return toResponse(persisted, mentioned);
     }
 
+    @Audited(action = AuditAction.UPDATE, entityType = AuditEntityType.COMMENT, idArg = 1)
     public CommentResponse update(Long ticketId, Long commentId, CommentUpdateRequest req) {
         Comment comment = loadCommentOnTicket(ticketId, commentId);
         comment.setContent(req.content());
@@ -89,6 +94,7 @@ public class CommentService {
         return toResponse(comment, mentioned);
     }
 
+    @Audited(action = AuditAction.DELETE, entityType = AuditEntityType.COMMENT, idArg = 1)
     public void delete(Long ticketId, Long commentId) {
         Comment comment = loadCommentOnTicket(ticketId, commentId);
         commentRepository.delete(comment);

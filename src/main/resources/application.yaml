@@ -32,3 +32,44 @@ issueflow:
       issuer: issueflow
       audience: issueflow-api
       expiration-seconds: 3600
+  escalation:
+    interval: PT5M
+    initial-delay: PT1M
+    batch-size: 100
+
+# Phase 4 observability. Actuator exposes Kubernetes probes (liveness/readiness),
+# Prometheus scrape endpoint, and standard /info + /metrics. Micrometer tracing
+# populates trace_id/span_id in MDC for log correlation; sampling is 1.0 in dev
+# so every request gets a trace context, override via env in prod if needed.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+      group:
+        readiness:
+          include: db, diskSpace
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  info:
+    env:
+      enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: IssueFlow ticket-tracking backend

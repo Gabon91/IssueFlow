@@ -16,16 +16,23 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
+import java.time.Instant;
 import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.SQLRestriction;
 
 /**
  * Application user. Identified by a unique {@code username} and {@code email}.
  * The {@code passwordHash} column stores a BCrypt hash; the plain password is never persisted.
+ *
+ * <p>Soft-deletable: {@code deletedAt} is stamped instead of removing the row, so historical
+ * FK references from {@code Ticket.assignee} and {@code Comment.author} remain valid. The
+ * {@code @SQLRestriction} filter hides soft-deleted rows from default repository reads;
+ * ADMIN-only escape hatches (see {@code UserRepository}) bypass it for restore and listing.</p>
  */
 @Entity
 @Table(
@@ -36,6 +43,7 @@ import lombok.Setter;
     },
     indexes = @Index(name = "ix_users_role", columnList = "role")
 )
+@SQLRestriction("deleted_at IS NULL")
 @Getter
 @Setter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -71,4 +79,8 @@ public class User extends BaseAuditableEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private Role role;
+
+    /** Soft-delete marker; {@code null} for live rows. */
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
 }

@@ -5,6 +5,7 @@ import com.att.tdp.issueflow.user.dto.UserResponse;
 import com.att.tdp.issueflow.user.dto.UserUpdateRequest;
 import jakarta.validation.Valid;
 import java.util.List;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -49,5 +50,17 @@ public class UserController {
     @DeleteMapping("/{userId}")
     public void delete(@PathVariable Long userId) {
         userService.delete(userId);
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<UserResponse> listDeleted() {
+        return userService.findDeleted();
+    }
+
+    @PostMapping("/{userId}/restore")
+    @PreAuthorize("hasRole('ADMIN')")
+    public void restore(@PathVariable Long userId) {
+        userService.restore(userId);
     }
 }

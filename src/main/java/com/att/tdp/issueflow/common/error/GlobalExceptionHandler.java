@@ -17,6 +17,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 /**
  * Centralised translation of domain and framework exceptions into the {@link ApiError} envelope.
@@ -87,6 +88,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiError> handleForbidden(AccessDeniedException ex, HttpServletRequest req) {
         return build(HttpStatus.FORBIDDEN, "Access denied", req, null);
+    }
+
+    @ExceptionHandler({PayloadTooLargeException.class, MaxUploadSizeExceededException.class})
+    public ResponseEntity<ApiError> handlePayloadTooLarge(Exception ex, HttpServletRequest req) {
+        return build(HttpStatus.PAYLOAD_TOO_LARGE, ex.getMessage(), req, null);
+    }
+
+    @ExceptionHandler(UnsupportedMimeTypeException.class)
+    public ResponseEntity<ApiError> handleUnsupportedMime(UnsupportedMimeTypeException ex, HttpServletRequest req) {
+        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, ex.getMessage(), req, null);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

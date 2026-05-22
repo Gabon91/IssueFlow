@@ -19,11 +19,11 @@ import com.att.tdp.issueflow.ticket.domain.TicketPriority;
 import com.att.tdp.issueflow.ticket.domain.TicketRepository;
 import com.att.tdp.issueflow.ticket.domain.TicketStatus;
 import com.att.tdp.issueflow.user.UserRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -38,7 +38,7 @@ class TicketServiceTest {
     @Mock ProjectRepository projectRepository;
     @Mock UserRepository userRepository;
     @Mock TicketMapper ticketMapper;
-    @InjectMocks TicketService service;
+    TicketService service;
 
     private Ticket ticketInStatus(TicketStatus status) {
         return Ticket.builder()
@@ -50,6 +50,8 @@ class TicketServiceTest {
 
     @BeforeEach
     void mapperStubReturnsNull() {
+        service = new TicketService(ticketRepository, projectRepository, userRepository,
+            ticketMapper, new SimpleMeterRegistry());
         // We don't assert mapper output; lenient stub keeps strict-mode Mockito quiet.
         lenient().when(ticketMapper.toResponse(any())).thenReturn(null);
     }
