@@ -1,0 +1,15 @@
+# Grafana dashboard provider. Reads every *.json file in /var/lib/grafana/dashboards
+# and registers it under the "IssueFlow" folder.
+apiVersion: 1
+
+providers:
+  - name: IssueFlow
+    orgId: 1
+    folder: IssueFlow
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

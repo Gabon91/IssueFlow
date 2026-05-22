@@ -10,13 +10,24 @@ End-to-end setup, build, run, test and observability instructions for the IssueF
 | Docker | recent | Docker Desktop on Windows / macOS, or Docker Engine on Linux. Required for Postgres and the integration test. |
 | Maven | (bundled) | Use the included `mvnw` / `mvnw.cmd` wrapper, no system install needed. |
 
-## 1. Start Postgres
+## 1. Start the stack
 
 ```bash
 docker compose up -d
 ```
 
-`compose.yml` brings up a single `postgres` service exposing `localhost:5432` with database / user / password all set to `issueflow`. Stop it later with `docker compose down`.
+`compose.yml` brings up six services on the `issueflow-net` bridge network:
+
+| Service | Port(s) | Purpose |
+|---|---|---|
+| `db` (postgres:16) | `5432` | Application database (`issueflow`/`issueflow`/`issueflow`). |
+| `issueflow` | `8080` | The Spring Boot app. Pulls the image set by `ISSUEFLOW_IMAGE`, defaulting to `issueflow:local` (produced by §2). |
+| `otel-collector` | `4317` (OTLP gRPC), `4318` (OTLP HTTP), `8889` (Prometheus exporter) | Receives OTLP from the app; fans traces out to Jaeger and exposes metrics for Prometheus. |
+| `jaeger` (all-in-one) | `16686` (UI), `4317` (OTLP) | Trace storage + UI. |
+| `prometheus` | `9090` | Scrapes `issueflow:8080/actuator/prometheus` and `otel-collector:8889`. |
+| `grafana` | `3000` | Dashboards (`admin`/`admin`; anonymous Viewer enabled). |
+
+If you only need Postgres for `./mvnw spring-boot:run` against the host JVM, you can start just the database with `docker compose up -d db`. Stop everything with `docker compose down`.
 
 ## 2. Build
 
@@ -26,6 +37,17 @@ mvnw.cmd clean package -DskipTests        # Windows
 ```
 
 The build produces `target/issueflow-0.0.1-SNAPSHOT.jar`.
+
+### Build the container image
+
+The `spring-boot-maven-plugin` is configured (`pom.xml`) to produce an OCI image tagged `issueflow:local` via Paketo buildpacks — no `Dockerfile` is required.
+
+```bash
+./mvnw -DskipTests spring-boot:build-image            # macOS / Linux
+mvnw.cmd -DskipTests spring-boot:build-image          # Windows
+```
+
+After the image exists locally, `docker compose up -d` will pick it up (the `issueflow` service defaults to `image: issueflow:local`). To run against a published image instead, set `ISSUEFLOW_IMAGE`, e.g. `ISSUEFLOW_IMAGE=ghcr.io/<owner>/issueflow:<tag> docker compose up -d`.
 
 ## 3. Run the application
 
@@ -110,7 +132,39 @@ The helper prints per-class and per-package coverage and an aggregate for servic
 
 Logs are JSON (Logstash encoder) on stdout and include `trace_id` / `span_id` from MDC. Business spans on `TicketService.create/update`, `EscalationService.escalate`, and `TicketCsvService.importFromCsv` are emitted via `@Observed`.
 
-## 8. Smoke test
+### Observability stack (Prometheus / Grafana / Jaeger)
+
+When the app runs under `docker compose up -d` (§1), traces and metrics flow through the bundled OpenTelemetry collector. The wiring lives under `ops/`:
+
+| File | Role |
+|---|---|
+| `ops/otel-collector-config.yaml` | Receives OTLP on `4317`/`4318`; exports traces to `jaeger:4317` and metrics on `:8889` for Prometheus scrape. |
+| `ops/prometheus.yml` | Scrapes `issueflow:8080/actuator/prometheus` and the collector's `:8889` every 15 s. |
+| `ops/grafana/provisioning/datasources/datasources.yaml` | Auto-provisions Prometheus (default, `uid=prometheus`) and Jaeger (`uid=jaeger`) datasources. |
+| `ops/grafana/provisioning/dashboards/dashboards.yaml` | File-provider that loads JSONs from `ops/grafana/dashboards`. |
+| `ops/grafana/dashboards/jvm-micrometer.json` | Grafana dashboard #4701 — JVM heap, GC, threads, CPU. |
+| `ops/grafana/dashboards/spring-boot-statistics.json` | Grafana dashboard #6756 — Spring Boot HTTP / Tomcat / Hikari overview. |
+
+The app is pre-configured (`application.yaml`) to send traces with 100 % sampling to `${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}` and exposes `/actuator/prometheus` for the scrape job. The `opentelemetry-exporter-otlp` runtime dependency is what actually pushes spans over the wire — without it Micrometer Tracing drops them silently.
+
+URLs once the stack is up:
+
+| UI | URL | Notes |
+|---|---|---|
+| App | http://localhost:8080 | `/actuator/health`, `/actuator/prometheus`, Swagger at `/swagger-ui.html`. |
+| Prometheus | http://localhost:9090 | `Status → Targets` should show `issueflow`, `otel-collector`, `prometheus` all `UP`. |
+| Grafana | http://localhost:3000 | `admin` / `admin`; both dashboards under *Dashboards → Browse*. |
+| Jaeger | http://localhost:16686 | Select service `issueflow` to see traces, e.g. for `POST /auth/login` or `POST /tickets`. |
+
+## 8. CI/CD
+
+GitHub Actions workflow `.github/workflows/ci-cd.yml` runs on every push and PR to `main` and `feature/**`:
+
+1. **build-test** — Java 21, Maven cache, `./mvnw verify` (Surefire + Failsafe + JaCoCo). Uploads the coverage report as an artifact. Spotless runs in *ratchet* mode (`-Dspotless.ratchetFrom=origin/main`) so style is enforced only on the lines you actually changed.
+2. **security-scan** — Trivy filesystem scan on the working tree, failing the job on `HIGH` / `CRITICAL` findings.
+3. **docker-build-push** — Only on push to `main`. Builds the OCI image via `./mvnw spring-boot:build-image`, tags `latest` + the short SHA, and pushes to `ghcr.io/${github.repository_owner}/issueflow`.
+
+## 9. Smoke test
 
 After the app is up, exercise the full surface:
 

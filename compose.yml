@@ -1,16 +1,130 @@
+# Local development & observability stack for IssueFlow.
+#
+# Image build strategy: the Spring Boot Maven plugin builds the OCI image via
+# Paketo buildpacks (no Dockerfile). Build locally with:
+#     ./mvnw spring-boot:build-image -DskipTests \
+#         -Dspring-boot.build-image.imageName=ghcr.io/${OWNER}/issueflow:local
+# Then `docker compose up`. CI publishes the same coordinates to GHCR.
+#
+# Observability flow (per ARCHITECTURE.md §5):
+#   issueflow --OTLP/HTTP--> otel-collector --OTLP/gRPC--> jaeger (traces)
+#                                           --/metrics--> prometheus --> grafana
+#   issueflow --/actuator/prometheus---------------------> prometheus --> grafana
+
+name: issueflow
+
 services:
   db:
-    image: postgres
+    image: postgres:16-alpine
     restart: always
     environment:
       POSTGRES_USER: issueflow
       POSTGRES_PASSWORD: issueflow
       POSTGRES_DB: issueflow
-  #  volumes:
-   #   - type: bind
-   #     source: ./data
-   #     target: /var/lib/postgresql/data --> in case u need to save data to local storage
     ports:
-      - target: 5432
-        published: 5432
-        protocol: tcp
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U issueflow -d issueflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [issueflow-net]
+
+  issueflow:
+    # Defaults to the tag the Spring Boot Maven plugin produces locally
+    # (issueflow:local). Override to pull from GHCR, e.g.
+    #   ISSUEFLOW_IMAGE=ghcr.io/<owner>/issueflow:<tag> docker compose up
+    image: ${ISSUEFLOW_IMAGE:-issueflow:local}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/issueflow
+      SPRING_DATASOURCE_USERNAME: issueflow
+      SPRING_DATASOURCE_PASSWORD: issueflow
+      # OTLP exporter targets the collector; Spring Boot's management.otlp.*
+      # properties accept these env overrides directly.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      OTEL_SERVICE_NAME: issueflow
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local,service.version=0.0.1-SNAPSHOT
+      ISSUEFLOW_JWT_SECRET: ${ISSUEFLOW_JWT_SECRET:-change-me-please-change-me-please-32b!}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/liveness"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    networks: [issueflow-net]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./ops/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus exporter (scraped by prometheus)
+    depends_on:
+      jaeger:
+        condition: service_started
+    networks: [issueflow-net]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14250:14250"   # model.proto
+    networks: [issueflow-net]
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [issueflow-net]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks: [issueflow-net]
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  issueflow-net:
+    driver: bridge

@@ -5,7 +5,7 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>3.4.2</version>
+		<version>3.4.12</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.att.tdp</groupId>
@@ -34,6 +34,13 @@
 		<springdoc.version>2.7.0</springdoc.version>
 		<jacoco.version>0.8.12</jacoco.version>
 		<testcontainers.version>1.21.4</testcontainers.version>
+		<spotless.version>2.43.0</spotless.version>
+		<palantir-format.version>2.50.0</palantir-format.version>
+		<!-- Default base ref for Spotless ratchet mode; CI overrides to origin/main. -->
+		<spotless.ratchetFrom>origin/main</spotless.ratchetFrom>
+		<!-- OCI image name produced by spring-boot:build-image; CI overrides to
+		     ghcr.io/${owner}/issueflow:<tag>. -->
+		<image.name>issueflow:local</image.name>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
@@ -187,11 +194,15 @@
 		</dependency>
 
 		<!-- Micrometer Observation API → OpenTelemetry: populates trace_id / span_id
-		     in MDC for log correlation. No exporter wired by default; flip on by
-		     adding opentelemetry-exporter-otlp + management.otlp.tracing.endpoint. -->
+		     in MDC for log correlation, and ships spans via OTLP/HTTP to the
+		     collector configured by management.otlp.tracing.endpoint. -->
 		<dependency>
 			<groupId>io.micrometer</groupId>
 			<artifactId>micrometer-tracing-bridge-otel</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.opentelemetry</groupId>
+			<artifactId>opentelemetry-exporter-otlp</artifactId>
 		</dependency>
 
 		<!-- Structured JSON logs (one event per line) with MDC fields surfaced as
@@ -238,6 +249,13 @@
 							<artifactId>lombok</artifactId>
 						</exclude>
 					</excludes>
+					<image>
+						<name>${image.name}</name>
+						<!-- Reuse a pre-pulled builder when available; Spring Boot's
+						     embedded pack client trips a Docker API 400 on Docker
+						     Desktop 29.x when re-pulling a present OCI manifest. -->
+						<pullPolicy>IF_NOT_PRESENT</pullPolicy>
+					</image>
 				</configuration>
 			</plugin>
 
@@ -262,6 +280,38 @@
 						</goals>
 					</execution>
 				</executions>
+			</plugin>
+
+			<!-- Spotless: code-style gate using Palantir Java Format. CI runs
+			     `mvn spotless:check` to fail fast on drift; developers run
+			     `mvn spotless:apply` locally to auto-fix. -->
+			<plugin>
+				<groupId>com.diffplug.spotless</groupId>
+				<artifactId>spotless-maven-plugin</artifactId>
+				<version>${spotless.version}</version>
+				<configuration>
+					<!-- Ratchet mode: only check lines changed since the base branch.
+					     Lets us enforce style on new/edited code without reformatting
+					     the 120 pre-existing files in a single commit. Run
+					     `mvn spotless:apply` locally to fix violations before pushing.
+					     Override the base ref with -Dspotless.ratchetFrom=<ref>. -->
+					<ratchetFrom>${spotless.ratchetFrom}</ratchetFrom>
+					<java>
+						<includes>
+							<include>src/main/java/**/*.java</include>
+							<include>src/test/java/**/*.java</include>
+						</includes>
+						<palantirJavaFormat>
+							<version>${palantir-format.version}</version>
+						</palantirJavaFormat>
+						<removeUnusedImports/>
+						<importOrder>
+							<order>java,javax,jakarta,org,com,</order>
+						</importOrder>
+						<trimTrailingWhitespace/>
+						<endWithNewline/>
+					</java>
+				</configuration>
 			</plugin>
 
 			<!-- JaCoCo: line/branch coverage report under target/site/jacoco. Both
