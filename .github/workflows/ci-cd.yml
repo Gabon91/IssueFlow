@@ -161,8 +161,12 @@ jobs:
           # GHCR requires the owner segment to be lowercase.
           IMG="${REGISTRY}/${IMAGE_NAME,,}:sha-${SHORT_SHA}"
           echo "IMG=${IMG}" >> "$GITHUB_ENV"
+          # The pom binds the image name to the `image.name` Maven property
+          # (see <image><name>${image.name}</name></image>), so override that
+          # rather than the generic spring-boot.build-image.imageName flag,
+          # which an explicit <configuration> block silently ignores.
           ./mvnw -B -ntp -DskipTests spring-boot:build-image \
-            -Dspring-boot.build-image.imageName="${IMG}"
+            -Dimage.name="${IMG}"
 
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@v0.36.0
