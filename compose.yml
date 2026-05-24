@@ -10,6 +10,7 @@
 #   issueflow --OTLP/HTTP--> otel-collector --OTLP/gRPC--> jaeger (traces)
 #                                           --/metrics--> prometheus --> grafana
 #   issueflow --/actuator/prometheus---------------------> prometheus --> grafana
+#   <all containers> --docker json log--> promtail -------> loki      --> grafana
 
 name: issueflow
 
@@ -101,6 +102,38 @@ services:
       - "9090:9090"
     networks: [issueflow-net]
 
+  loki:
+    image: grafana/loki:3.2.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./ops/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    networks: [issueflow-net]
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/config.yaml"]
+    volumes:
+      - ./ops/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      # Promtail uses docker_sd_configs to discover containers and read their
+      # JSON log files directly from the host's docker data directory.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-data:/tmp
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks: [issueflow-net]
+
   grafana:
     image: grafana/grafana:11.2.0
     restart: unless-stopped
@@ -119,11 +152,15 @@ services:
     depends_on:
       prometheus:
         condition: service_started
+      loki:
+        condition: service_healthy
     networks: [issueflow-net]
 
 volumes:
   prometheus-data:
   grafana-data:
+  loki-data:
+  promtail-data:
 
 networks:
   issueflow-net:

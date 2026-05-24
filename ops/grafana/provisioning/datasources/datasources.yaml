@@ -23,5 +23,28 @@ datasources:
     jsonData:
       tracesToMetrics:
         datasourceUid: prometheus
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -1m
+        spanEndTimeShift: 1m
+        filterByTraceID: true
+        tags: [{ key: "service.name", value: "service" }]
       nodeGraph:
         enabled: true
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      # Click-through from a log line's traceId straight into Jaeger. The
+      # double-dollar escapes Grafana's own provisioning env-var interpolation
+      # so the literal ${__value.raw} reaches the datasource definition.
+      derivedFields:
+        - name: TraceID
+          datasourceUid: jaeger
+          matcherRegex: '"traceId":"([a-f0-9]+)"'
+          url: "$${__value.raw}"
+          urlDisplayLabel: "View trace"

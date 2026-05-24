@@ -25,6 +25,8 @@ docker compose up -d
 | `otel-collector` | `4317` (OTLP gRPC), `4318` (OTLP HTTP), `8889` (Prometheus exporter) | Receives OTLP from the app; fans traces out to Jaeger and exposes metrics for Prometheus. |
 | `jaeger` (all-in-one) | `16686` (UI), `4317` (OTLP) | Trace storage + UI. |
 | `prometheus` | `9090` | Scrapes `issueflow:8080/actuator/prometheus` and `otel-collector:8889`. |
+| `loki` | `3100` | Log storage (filesystem-backed, 7-day retention). |
+| `promtail` | _internal_ | Tails Docker container logs via `/var/run/docker.sock` and ships them to Loki. |
 | `grafana` | `3000` | Dashboards (`admin`/`admin`; anonymous Viewer enabled). |
 
 If you only need Postgres for `./mvnw spring-boot:run` against the host JVM, you can start just the database with `docker compose up -d db`. Stop everything with `docker compose down`.
@@ -130,22 +132,24 @@ The helper prints per-class and per-package coverage and an aggregate for servic
 | `GET /actuator/metrics/issueflow.tickets.created` | Custom counter example. |
 | `GET /actuator/prometheus` | Prometheus scrape endpoint. |
 
-Logs are JSON (Logstash encoder) on stdout and include `trace_id` / `span_id` from MDC. Business spans on `TicketService.create/update`, `EscalationService.escalate`, and `TicketCsvService.importFromCsv` are emitted via `@Observed`.
+Logs are JSON (Logstash encoder) on stdout and include `traceId` / `spanId` from MDC. Business spans on `TicketService.create/update`, `EscalationService.escalate`, and `TicketCsvService.importFromCsv` are emitted via `@Observed`.
 
-### Observability stack (Prometheus / Grafana / Jaeger)
+### Observability stack (Prometheus / Grafana / Jaeger / Loki)
 
-When the app runs under `docker compose up -d` (§1), traces and metrics flow through the bundled OpenTelemetry collector. The wiring lives under `ops/`:
+When the app runs under `docker compose up -d` (§1), traces and metrics flow through the bundled OpenTelemetry collector and logs flow through Promtail → Loki. The wiring lives under `ops/`:
 
 | File | Role |
 |---|---|
 | `ops/otel-collector-config.yaml` | Receives OTLP on `4317`/`4318`; exports traces to `jaeger:4317` and metrics on `:8889` for Prometheus scrape. |
 | `ops/prometheus.yml` | Scrapes `issueflow:8080/actuator/prometheus` and the collector's `:8889` every 15 s. |
-| `ops/grafana/provisioning/datasources/datasources.yaml` | Auto-provisions Prometheus (default, `uid=prometheus`) and Jaeger (`uid=jaeger`) datasources. |
+| `ops/loki-config.yaml` | Single-binary Loki, TSDB index + filesystem chunks under `/loki`, 7-day retention. |
+| `ops/promtail-config.yaml` | Discovers containers via `docker_sd_configs`, peels the Docker JSON envelope, and JSON-parses the Logback payload for `issueflow` to surface `level`/`application` as labels. |
+| `ops/grafana/provisioning/datasources/datasources.yaml` | Auto-provisions Prometheus (default, `uid=prometheus`), Jaeger (`uid=jaeger`), and Loki (`uid=loki`) datasources. The Loki datasource carries a derived field that turns `"traceId":"<hex>"` in any log line into a clickable link into Jaeger. |
 | `ops/grafana/provisioning/dashboards/dashboards.yaml` | File-provider that loads JSONs from `ops/grafana/dashboards`. |
 | `ops/grafana/dashboards/jvm-micrometer.json` | Grafana dashboard #4701 — JVM heap, GC, threads, CPU. |
 | `ops/grafana/dashboards/spring-boot-statistics.json` | Grafana dashboard #6756 — Spring Boot HTTP / Tomcat / Hikari overview. |
 
-The app is pre-configured (`application.yaml`) to send traces with 100 % sampling to `${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}` and exposes `/actuator/prometheus` for the scrape job. The `opentelemetry-exporter-otlp` runtime dependency is what actually pushes spans over the wire — without it Micrometer Tracing drops them silently.
+The app is pre-configured (`application.yaml`) to send traces with 100 % sampling to `${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}` and exposes `/actuator/prometheus` for the scrape job. The `opentelemetry-exporter-otlp` runtime dependency is what actually pushes spans over the wire — without it Micrometer Tracing drops them silently. Logs are emitted as Logback JSON (`src/main/resources/logback-spring.xml`) on stdout, with `traceId`/`spanId` lifted from MDC into top-level fields so Promtail can promote `level`/`application` to labels and Grafana can extract the `traceId` for trace correlation.
 
 URLs once the stack is up:
 
@@ -153,8 +157,9 @@ URLs once the stack is up:
 |---|---|---|
 | App | http://localhost:8080 | `/actuator/health`, `/actuator/prometheus`, Swagger at `/swagger-ui.html`. |
 | Prometheus | http://localhost:9090 | `Status → Targets` should show `issueflow`, `otel-collector`, `prometheus` all `UP`. |
-| Grafana | http://localhost:3000 | `admin` / `admin`; both dashboards under *Dashboards → Browse*. |
+| Grafana | http://localhost:3000 | `admin` / `admin`; both dashboards under *Dashboards → Browse*. *Explore → Loki* queries logs (e.g. `{application="issueflow", level="WARN"}`). |
 | Jaeger | http://localhost:16686 | Select service `issueflow` to see traces, e.g. for `POST /auth/login` or `POST /tickets`. |
+| Loki | http://localhost:3100 | API only (`/ready`, `/loki/api/v1/labels`, `/loki/api/v1/query_range`); the UI is Grafana → Explore. |
 
 ## 8. CI/CD
 
