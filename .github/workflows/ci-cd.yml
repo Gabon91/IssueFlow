@@ -21,6 +21,12 @@ permissions:
   contents: read
   packages: write
   security-events: write
+  # PR feedback surface: coverage / test-failure / docker-summary comments,
+  # plus Spotless suggestions posted as inline review comments.
+  pull-requests: write
+  # Lets mikepenz/action-junit-report own the "JUnit" check run cleanly
+  # instead of falling back to logging-only mode.
+  checks: write
 
 jobs:
   # -------------------------------------------------------------------------
@@ -43,8 +49,29 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Lint (Spotless · ratchet vs origin/main)
-        run: ./mvnw -B -ntp spotless:check -Dspotless.ratchetFrom=origin/main
+      # Spotless flow: apply locally (ratchet-limited to changed lines), let
+      # reviewdog publish each hunk as an inline PR suggestion on Files
+      # Changed, then fail the build if the working tree is dirty. Net effect
+      # matches the previous `spotless:check` gate but gives developers a
+      # click-to-apply fix inside the PR review.
+      - name: Lint (Spotless · apply, ratchet vs origin/main)
+        run: ./mvnw -B -ntp spotless:apply -Dspotless.ratchetFrom=origin/main
+
+      - name: Spotless · post diff as PR suggestions
+        if: github.event_name == 'pull_request'
+        uses: reviewdog/action-suggester@v1
+        with:
+          tool_name: spotless
+          level: warning
+          fail_on_error: false
+
+      - name: Spotless · fail on style drift
+        run: |
+          if ! git diff --quiet; then
+            echo "::error::Spotless found style violations on changed lines. Run './mvnw spotless:apply -Dspotless.ratchetFrom=origin/main' locally, or accept the suggestions on the PR."
+            git --no-pager diff --stat
+            exit 1
+          fi
 
       - name: Build + unit & integration tests + JaCoCo report
         run: ./mvnw -B -ntp verify
@@ -56,6 +83,13 @@ jobs:
           report_paths: "**/target/*-reports/TEST-*.xml"
           check_name: "JUnit"
           fail_on_failure: true
+          # Sticky PR comment listing only failed tests + stack traces, so the
+          # diff between runs stays readable and green PRs don't get a noisy
+          # "all 312 tests passed" wall of text.
+          comment: true
+          updateComment: true
+          detailed_summary: true
+          include_passed: false
 
       - name: Coverage summary
         if: always()
@@ -66,6 +100,21 @@ jobs:
               if (total>0) printf "Line coverage: **%.2f%%** (%d/%d)\n", covered/total*100, covered, total;
             }' target/site/jacoco/jacoco.csv >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # Sticky PR comment: overall coverage + per-changed-file deltas. Reads
+      # the XML report produced by jacoco:report (bound to verify in pom.xml).
+      # Thresholds are advisory (min-coverage-* do not fail the build) so the
+      # build-test job's own quality gate remains the single source of truth.
+      - name: Post JaCoCo coverage to PR
+        if: github.event_name == 'pull_request' && always()
+        uses: madrapps/jacoco-report@v1.7.1
+        with:
+          paths: target/site/jacoco/jacoco.xml
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "JaCoCo Coverage"
+          update-comment: true
+          min-coverage-overall: 60
+          min-coverage-changed-files: 70
 
       - name: Upload coverage report
         if: always()
@@ -125,8 +174,11 @@ jobs:
 
   # -------------------------------------------------------------------------
   # 3. Build the OCI image with the Spring Boot Maven plugin (Paketo
-  #    buildpacks — no Dockerfile), scan it with Trivy, then push to GHCR
-  #    on main / feature/** (skipped on pull_request from forks).
+  #    buildpacks — no Dockerfile) and scan it with Trivy on every event.
+  #    The push to GHCR is strictly gated on `github.event_name != 'pull_request'`
+  #    AND a defensive runtime assertion inside the push step itself, so PRs
+  #    (including from forks, where GITHUB_TOKEN has no `packages: write`
+  #    anyway) only ever build & scan — never publish.
   # -------------------------------------------------------------------------
   docker-build-push:
     name: Docker · Build · Scan · Push (GHCR)
@@ -185,12 +237,13 @@ jobs:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
-      - name: Save image as workflow artifact (fallback when not pushing)
+      # --- PR-only branch: validate, no publish -----------------------------
+      - name: Save image as workflow artifact (PR only)
         if: github.event_name == 'pull_request'
         run: |
           docker save "${IMG}" | gzip > issueflow-image.tar.gz
 
-      - name: Upload image tarball
+      - name: Upload image tarball (PR only)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
@@ -198,7 +251,29 @@ jobs:
           path: issueflow-image.tar.gz
           retention-days: 7
 
-      - name: Log in to GHCR
+      - name: Comment Docker build summary on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: docker-build
+          message: |
+            ### Docker · PR validation (push skipped)
+
+            | Stage | Status |
+            |---|---|
+            | Build (Paketo `builder-jammy-java-tiny`) | done |
+            | Trivy image scan (HIGH/CRITICAL) | report uploaded to **Security → Code scanning** under `trivy-image` |
+            | Push to GHCR | **skipped** — pull requests never publish |
+
+            - Local tag built: `${{ env.IMG }}`
+            - Pull the image locally from the run artifact `issueflow-docker-image` (7-day retention):
+              ```bash
+              gh run download ${{ github.run_id }} -n issueflow-docker-image
+              docker load < issueflow-image.tar.gz
+              ```
+
+      # --- Non-PR branch: log in & push to GHCR -----------------------------
+      - name: Log in to GHCR (push events only)
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
@@ -206,9 +281,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push image (+ extra tags from metadata)
+      - name: Push image to GHCR (push events only)
         if: github.event_name != 'pull_request'
         run: |
+          # Defense-in-depth: if the workflow's PR guard above is ever
+          # accidentally removed or weakened, this assertion still refuses
+          # to publish an unmerged commit.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "::error::Refusing to push from a pull_request event."
+            exit 1
+          fi
           # Push the primary sha-tagged image we built.
           docker push "${IMG}"
           # Apply and push every additional tag computed by docker/metadata-action.
