@@ -495,13 +495,13 @@ This lets in-flight HTTP requests and scheduled jobs finish before the JVM exits
 
 ## 8. Testing Strategy
 
-| Test Type | Tool | Scope |
-|---|---|---|
-| **Unit** | JUnit 5 + Mockito | Pure logic: state-machine guard, mention parser, auto-assign tie-break, escalation idempotency. |
-| **Web slice** | `@WebMvcTest` + MockMvc | Validation, status codes, JSON shape, security filter chain. |
-| **Persistence slice** | `@DataJpaTest` + Testcontainers PostgreSQL | Custom queries, soft-delete `@SQLRestriction`, optimistic-lock behaviour. |
-| **Integration** | `@SpringBootTest` + Testcontainers | End-to-end: login → create project → import CSV → escalate → audit log assertion. |
-| **Contract / smoke** | `RestAssured` against the booted app | One happy-path script per API table row in `README.md`. |
+| Test Type | Tool | Scope | Example |
+|---|---|---|---|
+| **Unit** | JUnit 5 + Mockito | Pure logic: state-machine guard, mention parser, auto-assign tie-break, escalation idempotency. | [`TicketStateMachineTest`](src/test/java/com/att/tdp/issueflow/ticket/domain/TicketStateMachineTest.java), [`MentionParserTest`](src/test/java/com/att/tdp/issueflow/comment/MentionParserTest.java), [`TicketServiceTest`](src/test/java/com/att/tdp/issueflow/ticket/service/TicketServiceTest.java), [`EscalationServiceTest`](src/test/java/com/att/tdp/issueflow/ticket/escalation/EscalationServiceTest.java) |
+| **Web slice** | `@WebMvcTest` + MockMvc | Validation, status codes, JSON shape, security filter chain. | [`TicketControllerTest`](src/test/java/com/att/tdp/issueflow/ticket/api/TicketControllerTest.java), [`UserControllerTest`](src/test/java/com/att/tdp/issueflow/user/UserControllerTest.java) |
+| **Persistence slice** | `@DataJpaTest` + Testcontainers PostgreSQL | Custom queries, soft-delete `@SQLRestriction`, optimistic-lock behaviour. | _planned in Phase 5_ |
+| **Integration** | `@SpringBootTest` + Testcontainers | End-to-end: login → create project → import CSV → escalate → audit log assertion. | [`ReadmeApiHappyPathIT`](src/test/java/com/att/tdp/issueflow/it/ReadmeApiHappyPathIT.java) |
+| **Contract / smoke** | `RestAssured` against the booted app | One happy-path script per API table row in `README.md`. | [`ReadmeApiHappyPathIT`](src/test/java/com/att/tdp/issueflow/it/ReadmeApiHappyPathIT.java) |
 
 > Note: the current `pom.xml` pulls in H2 for tests, but H2 does not faithfully reproduce
 > PostgreSQL semantics (JSONB, `@SQLRestriction`, sequence behaviour). Phase 5 swaps H2 for
@@ -618,7 +618,15 @@ gantt
 
 ---
 
-## 11. Approval Checklist
+## 11. Known Issues
+
+| Area | Issue | Impact | Suggested fix |
+|---|---|---|---|
+| `CommentService.delete` | Hard-deletes the `comments` row without first removing the dependent `comment_mentions` rows. `fk_mentions_comment` has no `ON DELETE CASCADE`, and `Comment` has no `@OneToMany` back-reference, so neither the DB nor JPA cleans up. | `DELETE /tickets/{tid}/comments/{cid}` against a comment with at least one mention raises a foreign-key violation → HTTP 500. Comments without mentions delete normally, masking the bug in casual testing. | Either (a) call `mentionRepository.deleteByCommentId(commentId)` + `flush()` before `commentRepository.delete(comment)` — mirrors the existing pattern in `CommentService.update`; or (b) add a Flyway migration switching `fk_mentions_comment` to `ON DELETE CASCADE`. Belt-and-suspenders combination is also fine. |
+
+---
+
+## 12. Approval Checklist
 
 - [ ] ERD in §2 matches expected business model
 - [ ] Package layout in §3.1 is acceptable
